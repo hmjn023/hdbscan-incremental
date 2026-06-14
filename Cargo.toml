@@ -1,0 +1,13 @@
+[package]
+name = "hdbscan-incremental"
+version = "0.1.0"
+edition = "2021"
+description = "Incremental HDBSCAN clustering with Bubble-tree for dynamic data"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+rand = "0.8"
