@@ -3,6 +3,9 @@ pub fn cosine_distance(a: &[f64], b: &[f64]) -> f64 {
     let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
     let norm_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm_a == 0.0 && norm_b == 0.0 {
+        return 0.0;
+    }
     if norm_a == 0.0 || norm_b == 0.0 {
         return 1.0;
     }
@@ -40,6 +43,16 @@ mod tests {
         let a = vec![1.0, 0.0];
         let b = vec![-1.0, 0.0];
         assert!((cosine_distance(&a, &b) - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cosine_distance_zero_vectors() {
+        let zero = vec![0.0, 0.0];
+        let non_zero = vec![1.0, 0.0];
+
+        assert!((cosine_distance(&zero, &zero) - 0.0).abs() < 1e-10);
+        assert!((cosine_distance(&zero, &non_zero) - 1.0).abs() < 1e-10);
+        assert!((cosine_distance(&non_zero, &zero) - 1.0).abs() < 1e-10);
     }
 
     #[test]

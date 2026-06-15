@@ -11,6 +11,8 @@
 - **HDBSCAN**: 密度ベースの階層クラスタリング
 - **コサイン距離**: 高次元ベクトル（CCIP 768次元等）に最適
 
+`compression_rate` は固定 leaf 数ではなく、現在の点数 `N` から `ceil(N * compression_rate)` を目標 leaf 数として計算する。
+
 ## インストール
 
 ```toml
@@ -33,7 +35,7 @@ fn main() {
     };
 
     // インデックス作成 (768次元ベクトル)
-    let mut index = HdbscanIncremental::new(768, params);
+    let mut index = HdbscanIncremental::try_new(768, params).unwrap();
 
     // ベクトル追加
     let vectors = vec![
@@ -59,7 +61,8 @@ fn main() {
 
 | メソッド | 説明 |
 |---|---|
-| `new(dim, params)` | 新規インデックス作成 |
+| `try_new(dim, params)` | パラメータ検証つき新規インデックス作成 |
+| `new(dim, params)` | 新規インデックス作成（不正パラメータではpanic） |
 | `add(vectors)` | ベクトル追加（ID配列を返却） |
 | `remove(ids)` | ベクトル削除 |
 | `cluster()` | クラスタリング実行 |
@@ -72,7 +75,7 @@ fn main() {
 |---|---|---|
 | `min_pts` | 100 | HDBSCANの密度パラメータ |
 | `min_cluster_size` | 100 | 最小クラスタサイズ |
-| `compression_rate` | 0.01 | 圧縮率 (1%) |
+| `compression_rate` | 0.01 | 現在の点数 N に対する目標 leaf 割合。例: 0.01 は `ceil(N * 0.01)` leaf |
 | `m` | 25 | Bubble-tree最小ファンアウト |
 | `cluster_selection_method` | EOM | クラスタ選択方法 (EOM/Leaf) |
 
@@ -80,7 +83,7 @@ fn main() {
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `labels` | `Vec<i32>` | クラスタラベル (-1 = ノイズ) |
+| `labels` | `Vec<i32>` | 現在は Data Bubble 順のクラスタラベル (-1 = ノイズ)。点 ID 対応の assignment API は今後追加予定 |
 | `probabilities` | `Vec<f64>` | メンバーシップ確率 |
 | `num_clusters` | `usize` | クラスタ数 |
 | `stability` | `Vec<f64>` | クラスタ安定性 |

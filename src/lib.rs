@@ -23,14 +23,18 @@ pub struct HdbscanIncremental {
 
 impl HdbscanIncremental {
     pub fn new(dim: usize, params: HdbscanParams) -> Self {
-        let l = (1.0 / params.compression_rate).ceil() as usize;
+        Self::try_new(dim, params).expect("invalid HdbscanIncremental parameters")
+    }
+
+    pub fn try_new(dim: usize, params: HdbscanParams) -> Result<Self, HdbscanError> {
+        validate_params(dim, &params)?;
         let m = params.m.max(1);
-        Self {
-            tree: bubble_tree::BubbleTree::new(dim, l, m),
+        Ok(Self {
+            tree: bubble_tree::BubbleTree::new_with_compression(dim, params.compression_rate, m),
             params,
             points: Vec::new(),
             dim,
-        }
+        })
     }
 
     pub fn add(&mut self, vectors: &[Vec<f64>]) -> Result<Vec<usize>, HdbscanError> {
@@ -84,6 +88,42 @@ impl HdbscanIncremental {
     pub fn num_points(&self) -> usize {
         self.tree.total_points()
     }
+}
+
+fn validate_params(dim: usize, params: &HdbscanParams) -> Result<(), HdbscanError> {
+    if dim == 0 {
+        return Err(HdbscanError::InvalidParameter(
+            "dim must be greater than 0".to_string(),
+        ));
+    }
+    if params.min_pts == 0 {
+        return Err(HdbscanError::InvalidParameter(
+            "min_pts must be greater than or equal to 1".to_string(),
+        ));
+    }
+    if params.min_cluster_size < 2 {
+        return Err(HdbscanError::InvalidParameter(
+            "min_cluster_size must be greater than or equal to 2".to_string(),
+        ));
+    }
+    if !(params.compression_rate > 0.0 && params.compression_rate <= 1.0) {
+        return Err(HdbscanError::InvalidParameter(
+            "compression_rate must be in the range (0.0, 1.0]".to_string(),
+        ));
+    }
+    if params.m == 0 {
+        return Err(HdbscanError::InvalidParameter(
+            "m must be greater than or equal to 1".to_string(),
+        ));
+    }
+    if let Some(bit_width) = params.turbovec_bit_width {
+        if !(2..=4).contains(&bit_width) {
+            return Err(HdbscanError::InvalidParameter(
+                "turbovec_bit_width must be 2, 3, or 4".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -140,5 +180,27 @@ mod tests {
 
         index.remove(&[ids[0]]).unwrap();
         assert_eq!(index.num_points(), 3);
+    }
+
+    #[test]
+    fn test_try_new_rejects_invalid_parameters() {
+        assert!(matches!(
+            HdbscanIncremental::try_new(0, HdbscanParams::default()),
+            Err(HdbscanError::InvalidParameter(_))
+        ));
+
+        let mut params = HdbscanParams::default();
+        params.compression_rate = 0.0;
+        assert!(matches!(
+            HdbscanIncremental::try_new(2, params),
+            Err(HdbscanError::InvalidParameter(_))
+        ));
+
+        let mut params = HdbscanParams::default();
+        params.min_cluster_size = 1;
+        assert!(matches!(
+            HdbscanIncremental::try_new(2, params),
+            Err(HdbscanError::InvalidParameter(_))
+        ));
     }
 }

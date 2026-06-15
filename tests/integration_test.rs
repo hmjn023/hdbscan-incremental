@@ -3,8 +3,8 @@ use hdbscan_incremental::{HdbscanIncremental, HdbscanParams};
 fn small_params() -> HdbscanParams {
     HdbscanParams {
         min_pts: 2,
-        min_cluster_size: 1,
-        compression_rate: 0.25,
+        min_cluster_size: 2,
+        compression_rate: 0.5,
         m: 1,
         ..Default::default()
     }
