@@ -1,6 +1,7 @@
 use crate::data_bubble::DataBubble;
 use crate::distance;
-use crate::types::{ClusterSelection, ClusterResult, CondensedTreeNode, HdbscanError, HdbscanParams, Label, LinkageRow};
+use crate::types::{ClusterResult, ClusterSelection, CondensedTreeNode, HdbscanError, HdbscanParams, Label, LinkageRow};
+use rayon::prelude::*;
 
 pub struct Hdbscan {
     params: HdbscanParams,
@@ -27,10 +28,10 @@ impl Hdbscan {
         let mst = self.build_mst(bubbles, &core_distances);
 
         // Step 3: Build linkage (dendrogram)
-        let linkage = self.build_linkage(&mst, n);
+        let linkage = self.build_linkage(bubbles, &mst, n);
 
         // Step 4: Condense the tree
-        let condensed = self.condense_tree(&linkage, min_cluster_size);
+        let condensed = self.condense_tree(bubbles, &linkage, min_cluster_size);
 
         // Step 5: Compute stability
         let stability = self.compute_stability(&condensed);
@@ -53,34 +54,36 @@ impl Hdbscan {
 
     fn compute_core_distances(&self, bubbles: &[DataBubble], min_pts: usize) -> Vec<f64> {
         let n = bubbles.len();
-        let mut core_distances = vec![0.0; n];
-
-        for i in 0..n {
-            let mut distances: Vec<f64> = (0..n)
-                .filter(|&j| j != i)
-                .map(|j| bubbles[i].core_distance(&bubbles[j], min_pts))
-                .collect();
-            distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            core_distances[i] = if distances.len() >= min_pts {
-                distances[min_pts - 1]
-            } else {
-                *distances.last().unwrap_or(&0.0)
-            };
-        }
-
-        core_distances
+        (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let mut distances: Vec<f64> = (0..n)
+                    .filter(|&j| j != i)
+                    .map(|j| bubbles[i].core_distance(&bubbles[j], min_pts))
+                    .collect();
+                distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                if distances.len() >= min_pts {
+                    distances[min_pts - 1]
+                } else {
+                    *distances.last().unwrap_or(&0.0)
+                }
+            })
+            .collect()
     }
 
     fn build_mst(&self, bubbles: &[DataBubble], core_distances: &[f64]) -> Vec<(usize, usize, f64)> {
         let n = bubbles.len();
-        let mut mst = Vec::with_capacity(n - 1);
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut mst = Vec::with_capacity(n.saturating_sub(1));
         let mut in_mst = vec![false; n];
         let mut min_edge = vec![f64::INFINITY; n];
         let mut parent = vec![usize::MAX; n];
 
         in_mst[0] = true;
         for j in 1..n {
-            let d = self.mutual_reachability(&bubbles[0], &bubbles[j], core_distances);
+            let d = self.mutual_reachability(0, j, bubbles, core_distances);
             min_edge[j] = d;
             parent[j] = 0;
         }
@@ -104,7 +107,7 @@ impl Hdbscan {
 
             for j in 0..n {
                 if !in_mst[j] {
-                    let d = self.mutual_reachability(&bubbles[best], &bubbles[j], core_distances);
+                    let d = self.mutual_reachability(best, j, bubbles, core_distances);
                     if d < min_edge[j] {
                         min_edge[j] = d;
                         parent[j] = best;
@@ -116,53 +119,48 @@ impl Hdbscan {
         mst
     }
 
-    fn mutual_reachability(&self, a: &DataBubble, b: &DataBubble, core_distances: &[f64]) -> f64 {
-        let i = 0; // placeholder - need actual indices
-        let j = 0; // placeholder
-        let d = distance::cosine_distance(&a.rep, &b.rep);
+    fn mutual_reachability(&self, i: usize, j: usize, bubbles: &[DataBubble], core_distances: &[f64]) -> f64 {
+        let d = distance::cosine_distance(&bubbles[i].rep, &bubbles[j].rep);
         d.max(core_distances[i]).max(core_distances[j])
     }
 
-    fn build_linkage(&self, mst: &[(usize, usize, f64)], n: usize) -> Vec<LinkageRow> {
+    fn build_linkage(&self, bubbles: &[DataBubble], mst: &[(usize, usize, f64)], n: usize) -> Vec<LinkageRow> {
         let mut linkage = Vec::with_capacity(n - 1);
         let mut sorted_mst = mst.to_vec();
         sorted_mst.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
 
-        let mut uf = UnionFind::new(2 * n);
-        let mut next_label = n;
+        let mut weights: Vec<usize> = vec![0; 2 * n];
+        for (i, b) in bubbles.iter().enumerate() {
+            weights[i] = b.n;
+        }
+        let mut uf = UnionFind::new(2 * n, &weights);
 
-        for (u, v, dist) in sorted_mst {
+        for (next_label, (u, v, dist)) in (n..).zip(sorted_mst) {
             let left = uf.find(u);
             let right = uf.find(v);
-            let left_size = self.component_size(&uf, left, n);
-            let right_size = self.component_size(&uf, right, n);
+            let left_weight = uf.component_weight(left);
+            let right_weight = uf.component_weight(right);
 
-            uf.union(left, next_label);
-            uf.union(right, next_label);
+            uf.union_to_parent(left, next_label);
+            uf.union_to_parent(right, next_label);
 
             linkage.push(LinkageRow {
                 left,
                 right,
                 distance: dist,
-                size: left_size + right_size,
+                size: left_weight + right_weight,
             });
-
-            next_label += 1;
         }
 
         linkage
     }
 
-    fn component_size(&self, _uf: &UnionFind, root: usize, n: usize) -> usize {
-        if root < n {
-            1
-        } else {
-            // This is a simplified version - in practice, we'd track sizes
-            1
-        }
-    }
-
-    fn condense_tree(&self, linkage: &[LinkageRow], min_cluster_size: usize) -> Vec<CondensedTreeNode> {
+    fn condense_tree(
+        &self,
+        bubbles: &[DataBubble],
+        linkage: &[LinkageRow],
+        min_cluster_size: usize,
+    ) -> Vec<CondensedTreeNode> {
         let n = linkage.len() + 1;
         let root = 2 * n - 2;
         let mut result = Vec::new();
@@ -192,13 +190,13 @@ impl Hdbscan {
                 let left_count = if left >= n {
                     linkage[left - n].size
                 } else {
-                    1
+                    bubbles[left].n
                 };
 
                 let right_count = if right >= n {
                     linkage[right - n].size
                 } else {
-                    1
+                    bubbles[right].n
                 };
 
                 if left_count >= min_cluster_size && right_count >= min_cluster_size {
@@ -217,13 +215,13 @@ impl Hdbscan {
                     to_process.push(left);
                     to_process.push(right);
                 } else if left_count < min_cluster_size && right_count < min_cluster_size {
-                    self.collect_points(left, &linkage, &mut ignore, &mut result, node, lambda, n);
-                    self.collect_points(right, &linkage, &mut ignore, &mut result, node, lambda, n);
+                    self.collect_points(left, bubbles, linkage, &mut ignore, &mut result, node, lambda, n);
+                    self.collect_points(right, bubbles, linkage, &mut ignore, &mut result, node, lambda, n);
                 } else if left_count < min_cluster_size {
-                    self.collect_points(left, &linkage, &mut ignore, &mut result, node, lambda, n);
+                    self.collect_points(left, bubbles, linkage, &mut ignore, &mut result, node, lambda, n);
                     to_process.push(right);
                 } else {
-                    self.collect_points(right, &linkage, &mut ignore, &mut result, node, lambda, n);
+                    self.collect_points(right, bubbles, linkage, &mut ignore, &mut result, node, lambda, n);
                     to_process.push(left);
                 }
             }
@@ -232,9 +230,11 @@ impl Hdbscan {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn collect_points(
         &self,
         node: usize,
+        bubbles: &[DataBubble],
         linkage: &[LinkageRow],
         ignore: &mut [bool],
         result: &mut Vec<CondensedTreeNode>,
@@ -247,13 +247,13 @@ impl Hdbscan {
                 parent,
                 child: node,
                 lambda_val: lambda,
-                child_size: 1,
+                child_size: bubbles[node].n,
             });
         } else {
             ignore[node] = true;
             let row = &linkage[node - n];
-            self.collect_points(row.left, linkage, ignore, result, parent, lambda, n);
-            self.collect_points(row.right, linkage, ignore, result, parent, lambda, n);
+            self.collect_points(row.left, bubbles, linkage, ignore, result, parent, lambda, n);
+            self.collect_points(row.right, bubbles, linkage, ignore, result, parent, lambda, n);
         }
     }
 
@@ -285,6 +285,11 @@ impl Hdbscan {
         stability: &std::collections::HashMap<usize, f64>,
         n: usize,
     ) -> Result<(Vec<Label>, Vec<f64>), HdbscanError> {
+        if condensed.is_empty() {
+            // No clusters found; all points are noise
+            return Ok((vec![-1i32; n], vec![0.0f64; n]));
+        }
+
         let mut is_cluster: std::collections::HashMap<usize, bool> = std::collections::HashMap::new();
         let mut cluster_stability: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
 
@@ -294,29 +299,55 @@ impl Hdbscan {
             cluster_stability.insert(cluster_id, *stability.get(&cluster_id).unwrap_or(&0.0));
         }
 
-        // Process from leaves to root
+        // Build parent -> child-cluster map for fast lookup
+        let mut children_of: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        for node in condensed {
+            if node.child >= n {
+                children_of.entry(node.parent).or_default().push(node.child);
+            }
+        }
+
+        // Process from leaves to root (reverse order of cluster id)
         let mut nodes: Vec<usize> = stability.keys().cloned().collect();
-        nodes.sort_by(|a, b| b.cmp(a)); // Reverse topological sort
+        nodes.sort_by(|a, b| b.cmp(a));
 
         for node in nodes {
-            let mut subtree_stability = 0.0;
-            for child_node in condensed.iter().filter(|c| c.parent == node) {
-                subtree_stability += cluster_stability.get(&child_node.child).unwrap_or(&0.0);
-            }
+            let children = children_of.get(&node).cloned().unwrap_or_default();
+            let subtree_stability: f64 = children
+                .iter()
+                .map(|c| cluster_stability.get(c).unwrap_or(&0.0))
+                .sum();
 
-            let node_stability = cluster_stability.get(&node).unwrap_or(&0.0);
-            if subtree_stability > *node_stability {
+            let node_stability = *cluster_stability.get(&node).unwrap_or(&0.0);
+            if subtree_stability > node_stability {
                 is_cluster.insert(node, false);
                 cluster_stability.insert(node, subtree_stability);
             } else {
-                // Unselect all descendants
-                for desc in condensed.iter().filter(|c| c.parent == node) {
-                    is_cluster.insert(desc.child, false);
+                for child in children {
+                    is_cluster.insert(child, false);
                 }
             }
         }
 
-        // Assign labels
+        // Build child -> parent map, keeping only the highest lambda edge for each child
+        let mut child_to_parent: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for node in condensed {
+            child_to_parent
+                .entry(node.child)
+                .and_modify(|p| {
+                    let existing_lambda = condensed
+                        .iter()
+                        .find(|c| c.child == *p)
+                        .map(|c| c.lambda_val)
+                        .unwrap_or(0.0);
+                    if node.lambda_val > existing_lambda {
+                        *p = node.parent;
+                    }
+                })
+                .or_insert(node.parent);
+        }
+
+        // Assign labels by walking from root down to points
         let mut labels = vec![-1i32; n];
         let mut probabilities = vec![0.0f64; n];
         let mut cluster_map = std::collections::HashMap::new();
@@ -329,21 +360,53 @@ impl Hdbscan {
             }
         }
 
-        for node in condensed {
-            if node.child < n {
-                if let Some(&label) = cluster_map.get(&node.parent) {
-                    labels[node.child] = label;
-                    let max_lambda = condensed
-                        .iter()
-                        .filter(|c| c.parent == node.parent)
-                        .map(|c| c.lambda_val)
-                        .fold(0.0f64, f64::max);
-                    if max_lambda > 0.0 {
-                        probabilities[node.child] = (node.lambda_val / max_lambda).min(1.0);
-                    } else {
-                        probabilities[node.child] = 1.0;
-                    }
+        // For each point, find the nearest selected ancestor by lambda
+        let mut point_cluster_lambda: std::collections::HashMap<usize, (i32, f64)> = std::collections::HashMap::new();
+
+        for (point, label_slot) in labels.iter_mut().enumerate().take(n) {
+            let mut current = point;
+            let mut best_cluster: Option<(usize, f64)> = None;
+            let mut lambda = f64::INFINITY;
+
+            while let Some(&parent) = child_to_parent.get(&current) {
+                // Find the lambda for current under parent
+                let edge_lambda = condensed
+                    .iter()
+                    .find(|c| c.parent == parent && c.child == current)
+                    .map(|c| c.lambda_val)
+                    .unwrap_or(0.0);
+                lambda = lambda.min(edge_lambda);
+
+                if is_cluster.get(&parent).copied().unwrap_or(false) {
+                    best_cluster = Some((parent, lambda));
+                    break; // nearest selected ancestor found
                 }
+                current = parent;
+            }
+
+            if let Some((cluster_id, lambda_val)) = best_cluster {
+                if let Some(&label) = cluster_map.get(&cluster_id) {
+                    *label_slot = label;
+                    point_cluster_lambda.insert(point, (label, lambda_val));
+                }
+            }
+        }
+
+        // Compute probabilities: lambda_p / max_lambda_in_cluster
+        let mut max_lambda_by_cluster: std::collections::HashMap<i32, f64> = std::collections::HashMap::new();
+        for &(label, lambda_val) in point_cluster_lambda.values() {
+            let entry = max_lambda_by_cluster.entry(label).or_insert(lambda_val);
+            if lambda_val > *entry {
+                *entry = lambda_val;
+            }
+        }
+
+        for (point, (label, lambda_val)) in point_cluster_lambda {
+            let max_lambda = *max_lambda_by_cluster.get(&label).unwrap_or(&lambda_val);
+            if max_lambda > 0.0 && lambda_val.is_finite() {
+                probabilities[point] = (lambda_val / max_lambda).min(1.0);
+            } else {
+                probabilities[point] = 1.0;
             }
         }
 
@@ -401,14 +464,16 @@ impl Hdbscan {
 
 struct UnionFind {
     parent: Vec<usize>,
-    rank: Vec<usize>,
+    size: Vec<usize>,
+    weight: Vec<usize>,
 }
 
 impl UnionFind {
-    fn new(size: usize) -> Self {
+    fn new(size: usize, weights: &[usize]) -> Self {
         Self {
             parent: (0..size).collect(),
-            rank: vec![0; size],
+            size: vec![1; size],
+            weight: weights.to_vec(),
         }
     }
 
@@ -419,19 +484,21 @@ impl UnionFind {
         self.parent[x]
     }
 
-    fn union(&mut self, x: usize, y: usize) {
-        let root_x = self.find(x);
-        let root_y = self.find(y);
-        if root_x != root_y {
-            if self.rank[root_x] < self.rank[root_y] {
-                self.parent[root_x] = root_y;
-            } else if self.rank[root_x] > self.rank[root_y] {
-                self.parent[root_y] = root_x;
-            } else {
-                self.parent[root_y] = root_x;
-                self.rank[root_x] += 1;
-            }
+    fn union_to_parent(&mut self, child: usize, parent: usize) {
+        let root_child = self.find(child);
+        let root_parent = self.find(parent);
+        if root_child != root_parent {
+            let new_size = self.size[root_child] + self.size[root_parent];
+            let new_weight = self.weight[root_child] + self.weight[root_parent];
+            self.parent[root_child] = root_parent;
+            self.size[root_parent] = new_size;
+            self.weight[root_parent] = new_weight;
         }
+    }
+
+    fn component_weight(&mut self, x: usize) -> usize {
+        let root = self.find(x);
+        self.weight[root]
     }
 }
 

@@ -1,0 +1,5 @@
+[tools]
+node = "latest"
+rust = "latest"
+bun = "latest"
+pnpm = "latest"

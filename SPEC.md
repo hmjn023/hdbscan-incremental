@@ -193,6 +193,7 @@ pub struct HdbscanParams {
     pub min_cluster_size: usize, // 最小クラスタサイズ
     pub cluster_selection_method: ClusterSelection,
     pub compression_rate: f64,   // 圧縮率 (デフォルト: 0.01)
+    pub m: usize,                // Bubble-tree最小ファンアウト (デフォルト: 25)
 }
 
 /// クラスタ選択方法
@@ -247,7 +248,7 @@ cosine_distance(a, b) = 1 - (a·b) / (|a| * |b|)
 | `min_cluster_size` | 100 | 最小クラスタサイズ |
 | `compression_rate` | 0.01 | 圧縮率 (1%) |
 | `m` | 25 | Bubble-tree最小ファンアウト |
-| `max_fanout` | 50 | Bubble-tree最大ファンアウト |
+| `max_fanout` | 50 | Bubble-tree最大ファンアウト（未実装） |
 | `cluster_selection_method` | EOM | クラスタ選択方法 |
 
 ## 参照

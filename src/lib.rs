@@ -5,9 +5,11 @@ pub mod hdbscan;
 pub mod bubble_tree;
 pub mod types;
 
+pub use types::{ClusterResult, ClusterSelection, HdbscanError, HdbscanParams};
+
 use data_bubble::DataBubble;
 use hdbscan::Hdbscan;
-use types::{ClusterResult, HdbscanError, HdbscanParams, PointEntry};
+use types::PointEntry;
 
 pub struct HdbscanIncremental {
     tree: bubble_tree::BubbleTree,
@@ -19,7 +21,7 @@ pub struct HdbscanIncremental {
 impl HdbscanIncremental {
     pub fn new(dim: usize, params: HdbscanParams) -> Self {
         let l = (1.0 / params.compression_rate).ceil() as usize;
-        let m = 25;
+        let m = params.m.max(1);
         Self {
             tree: bubble_tree::BubbleTree::new(dim, l, m),
             params,
@@ -91,6 +93,7 @@ mod tests {
             min_pts: 2,
             min_cluster_size: 2,
             compression_rate: 0.5,  // 2 leaves
+            m: 1,
             ..Default::default()
         };
         let mut index = HdbscanIncremental::new(2, params);
@@ -108,7 +111,7 @@ mod tests {
 
         let result = index.cluster().unwrap();
         // Just verify we get a result without errors
-        assert!(result.labels.len() == index.num_bubbles());
+        assert_eq!(result.labels.len(), index.num_bubbles());
     }
 
     #[test]
@@ -117,6 +120,7 @@ mod tests {
             min_pts: 2,
             min_cluster_size: 2,
             compression_rate: 0.5,  // 2 leaves
+            m: 1,
             ..Default::default()
         };
         let mut index = HdbscanIncremental::new(2, params);

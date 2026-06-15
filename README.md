@@ -73,6 +73,7 @@ fn main() {
 | `min_pts` | 100 | HDBSCANの密度パラメータ |
 | `min_cluster_size` | 100 | 最小クラスタサイズ |
 | `compression_rate` | 0.01 | 圧縮率 (1%) |
+| `m` | 25 | Bubble-tree最小ファンアウト |
 | `cluster_selection_method` | EOM | クラスタ選択方法 (EOM/Leaf) |
 
 ### `ClusterResult`

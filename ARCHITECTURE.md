@@ -7,31 +7,19 @@ hdbscan-incremental/
 ├── Cargo.toml
 ├── SPEC.md              # 仕様書
 ├── ARCHITECTURE.md      # このファイル
+├── README.md            # クイックスタート
 ├── src/
 │   ├── lib.rs           # 公開API
 │   ├── types.rs         # 共通型定義
 │   ├── distance.rs      # 距離関数
 │   ├── cf.rs            # ClusteringFeature
 │   ├── data_bubble.rs   # DataBubble
-│   ├── bubble_tree.rs   # Bubble-tree ルート
-│   ├── bubble_tree/
-│   │   ├── mod.rs       # モジュール定義
-│   │   ├── insert.rs    # 挿入アルゴリズム
-│   │   ├── delete.rs    # 削除アルゴリズム
-│   │   ├── compress.rs  # MaintainCompression (Algorithm 1)
-│   │   └── split.rs     # 分割アルゴリズム (farthest pair seeding)
-│   ├── hdbscan.rs       # HDBSCAN ルート
-│   └── hdbscan/
-│       ├── mod.rs       # モジュール定義
-│       ├── core_distance.rs  # コア距離計算
-│       ├── mst.rs       # MST構築 (Prim)
-│       ├── dendrogram.rs    # 階層木構築
-│       ├── condense.rs  # 階層の凝縮
-│       ├── stability.rs # 安定性計算
-│       └── eom.rs       # EOMクラスタ選択
+│   ├── bubble_tree.rs   # Bubble-tree (insert/delete/split/reorganize)
+│   └── hdbscan.rs       # HDBSCAN (MST/linkage/condense/stability/EOM)
 └── tests/
-    ├── integration_test.rs  # 統合テスト
-    └── hdbscan_test.rs      # HDBSCANテスト
+    ├── bubble_tree_test.rs  # Bubble-tree テスト
+    ├── hdbscan_test.rs      # HDBSCAN テスト
+    └── integration_test.rs  # 統合テスト
 ```
 
 ## モジュール依存関係
@@ -44,7 +32,6 @@ lib.rs
 │   └── types.rs
 ├── hdbscan.rs
 │   ├── data_bubble.rs
-│   ├── cf.rs
 │   ├── distance.rs
 │   └── types.rs
 └── data_bubble.rs
@@ -119,12 +106,12 @@ cluster()
 enum Node {
     Internal {
         cf: ClusteringFeature,
-        children: Vec<Box<Node>>,
-        parent: Option<Weak<RefCell<Node>>>,  // 親への弱参照
+        children: Vec<Rc<RefCell<Node>>>,
+        parent: Option<Weak<RefCell<Node>>>,
     },
     Leaf {
         cf: ClusteringFeature,
-        children: Vec<Box<Node>>,  // 子は実際のポイント（CFのみ）
+        points: Vec<Vec<f64>>,
         parent: Option<Weak<RefCell<Node>>>,
     },
 }

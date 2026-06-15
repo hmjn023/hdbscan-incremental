@@ -13,6 +13,7 @@ pub struct HdbscanParams {
     pub min_cluster_size: usize,
     pub cluster_selection_method: ClusterSelection,
     pub compression_rate: f64,
+    pub m: usize,
 }
 
 impl Default for HdbscanParams {
@@ -22,6 +23,7 @@ impl Default for HdbscanParams {
             min_cluster_size: 100,
             cluster_selection_method: ClusterSelection::Eom,
             compression_rate: 0.01,
+            m: 25,
         }
     }
 }
