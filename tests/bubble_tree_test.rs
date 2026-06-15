@@ -12,3 +12,10 @@ fn test_leaf_count_after_inserts() {
     tree.insert(&[10.1, 10.1]);
     assert_eq!(tree.num_leaves(), 2, "after 4 inserts");
 }
+
+#[test]
+fn test_compression_rate_target_leaf_calculation() {
+    assert_eq!(BubbleTree::target_leaves_for(4, 0.25), 1);
+    assert_eq!(BubbleTree::target_leaves_for(5, 0.25), 2);
+    assert_eq!(BubbleTree::target_leaves_for(10_001, 0.01), 101);
+}

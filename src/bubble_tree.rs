@@ -12,6 +12,7 @@ pub struct BubbleTree {
     // TODO: enforce max_fanout when splitting internal nodes
     max_fanout: usize,
     l: usize,
+    compression_rate: Option<f64>,
     dim: usize,
     total_n: usize,
     num_leaves: usize,
@@ -44,10 +45,24 @@ impl BubbleTree {
             m,
             max_fanout,
             l,
+            compression_rate: None,
             dim,
             total_n: 0,
             num_leaves: 1,
         }
+    }
+
+    pub fn new_with_compression(dim: usize, compression_rate: f64, m: usize) -> Self {
+        let mut tree = Self::new(dim, 1, m);
+        tree.compression_rate = Some(compression_rate);
+        tree
+    }
+
+    pub fn target_leaves_for(n: usize, compression_rate: f64) -> usize {
+        if n == 0 {
+            return 1;
+        }
+        ((n as f64) * compression_rate).ceil().max(1.0) as usize
     }
 
     pub fn insert(&mut self, point: &[f64]) {
@@ -153,6 +168,10 @@ impl BubbleTree {
     }
 
     fn maintain_compression(&mut self) {
+        if let Some(compression_rate) = self.compression_rate {
+            self.l = Self::target_leaves_for(self.total_n, compression_rate);
+        }
+
         if self.num_leaves > self.l {
             self.remove_underfilled_leaf();
         } else if self.num_leaves < self.l {
@@ -175,7 +194,7 @@ impl BubbleTree {
             self.remove_node_from_parent(leaf);
             self.num_leaves -= 1;
             for p in points {
-                self.insert(&p);
+                self.insert_without_maintain(&p);
             }
         }
     }
@@ -546,5 +565,37 @@ mod tests {
         tree.insert(&[4.0, 5.0, 6.0]);
         let leaves = tree.extract_leaves();
         assert!(!leaves.is_empty());
+    }
+
+    #[test]
+    fn test_target_leaves_uses_current_n() {
+        assert_eq!(BubbleTree::target_leaves_for(0, 0.25), 1);
+        assert_eq!(BubbleTree::target_leaves_for(1, 0.25), 1);
+        assert_eq!(BubbleTree::target_leaves_for(4, 0.25), 1);
+        assert_eq!(BubbleTree::target_leaves_for(5, 0.25), 2);
+        assert_eq!(BubbleTree::target_leaves_for(1_000, 0.01), 10);
+    }
+
+    #[test]
+    fn test_compression_maintains_total_points_when_removing_leaf() {
+        let mut tree = BubbleTree::new(2, 2, 1);
+        for point in [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+            [2.0, 0.0],
+            [0.0, 2.0],
+        ] {
+            tree.insert(&point);
+        }
+        assert_eq!(tree.total_points(), 6);
+        assert_eq!(tree.num_leaves(), 2);
+
+        tree.l = 1;
+        tree.maintain_compression();
+
+        assert_eq!(tree.total_points(), 6);
+        assert_eq!(tree.num_leaves(), 1);
     }
 }

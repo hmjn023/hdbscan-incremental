@@ -35,7 +35,8 @@
 pub struct HdbscanIncremental { ... }
 
 impl HdbscanIncremental {
-    pub fn new(dim: usize, params: HdbscanParams) -> Result<Self, HdbscanError>;
+    pub fn try_new(dim: usize, params: HdbscanParams) -> Result<Self, HdbscanError>;
+    pub fn new(dim: usize, params: HdbscanParams) -> Self;
     pub fn add(&mut self, vectors: &[Vec<f64>]) -> Result<Vec<usize>, HdbscanError>;
     pub fn remove(&mut self, ids: &[usize]) -> Result<(), HdbscanError>;
     pub fn cluster(&self) -> Result<ClusterResult, HdbscanError>;
@@ -44,7 +45,7 @@ impl HdbscanIncremental {
 }
 ```
 
-`new` は不正パラメータを `HdbscanError::InvalidParameter` として返す。既存 API 互換を維持する必要がある間は `new_unchecked` ではなく `try_new` を追加して段階移行してもよい。
+`try_new` は不正パラメータを `HdbscanError::InvalidParameter` として返す。既存 API 互換のため `new` は `Self` を返すが、不正パラメータでは panic する段階移行用 API とする。
 
 ### パラメータ
 
@@ -72,6 +73,13 @@ pub struct HdbscanParams {
 - 実効 leaf 目標数 `L = ceil(N * compression_rate)` とし、下限は 1。N が更新されるため L は固定値ではなく現在点数から再計算する。
 
 注: 既存実装は `L = ceil(1 / compression_rate)` としているが、これは「圧縮率 1% なら 100 leaf」という固定 leaf 数になり、論文の「N を L 個へ、例: N の 1%」という意味から外れる。正しくは `target_leaves(N) = ceil(N * compression_rate)` である。
+
+### Distance Functions
+
+既定の cosine distance はゼロベクトルを次のように扱う。
+
+- zero/zero は同一方向の退化ケースとして距離 0。
+- zero/non-zero は方向比較不能な最大不一致として距離 1。
 
 ## データモデル
 
@@ -367,7 +375,7 @@ pub struct PointAssignment {
 }
 ```
 
-互換 API として `labels: Vec<i32>` を残す場合は、現在有効な点だけを `active_ids()` 昇順に並べた結果であることを明記する。
+Phase 1 では互換性を優先し、既存の `labels: Vec<i32>` は Data Bubble 順のラベルとして残す。点 ID 対応は `assignments: Vec<PointAssignment>` を追加する次フェーズで導入し、既存 `labels` は deprecated な bubble-level view として段階移行する。
 
 Data Bubble 上で選択された cluster は、その bubble に属する全点へ同じ label を割り当てる。bubble 内部での点単位境界は復元しない。
 
