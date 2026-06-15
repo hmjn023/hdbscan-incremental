@@ -194,7 +194,7 @@ impl BubbleTree {
             self.remove_node_from_parent(leaf);
             self.num_leaves -= 1;
             for p in points {
-                self.insert(&p);
+                self.insert_without_maintain(&p);
             }
         }
     }
@@ -574,5 +574,28 @@ mod tests {
         assert_eq!(BubbleTree::target_leaves_for(4, 0.25), 1);
         assert_eq!(BubbleTree::target_leaves_for(5, 0.25), 2);
         assert_eq!(BubbleTree::target_leaves_for(1_000, 0.01), 10);
+    }
+
+    #[test]
+    fn test_compression_maintains_total_points_when_removing_leaf() {
+        let mut tree = BubbleTree::new(2, 2, 1);
+        for point in [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+            [2.0, 0.0],
+            [0.0, 2.0],
+        ] {
+            tree.insert(&point);
+        }
+        assert_eq!(tree.total_points(), 6);
+        assert_eq!(tree.num_leaves(), 2);
+
+        tree.l = 1;
+        tree.maintain_compression();
+
+        assert_eq!(tree.total_points(), 6);
+        assert_eq!(tree.num_leaves(), 1);
     }
 }
