@@ -9,6 +9,11 @@ license = "MIT"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+turbovec = { version = "0.2", optional = true }
+
+[features]
+default = []
+turbovec = ["dep:turbovec"]
 
 [dev-dependencies]
 rand = "0.8"

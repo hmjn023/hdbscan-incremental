@@ -3,6 +3,9 @@ use crate::distance;
 use crate::types::{ClusterResult, ClusterSelection, CondensedTreeNode, HdbscanError, HdbscanParams, Label, LinkageRow};
 use rayon::prelude::*;
 
+#[cfg(feature = "turbovec")]
+use turbovec::TurboQuantIndex;
+
 pub struct Hdbscan {
     params: HdbscanParams,
 }
@@ -54,6 +57,22 @@ impl Hdbscan {
 
     fn compute_core_distances(&self, bubbles: &[DataBubble], min_pts: usize) -> Vec<f64> {
         let n = bubbles.len();
+        if n == 0 {
+            return Vec::new();
+        }
+
+        #[cfg(feature = "turbovec")]
+        if let Some(bit_width) = self.params.turbovec_bit_width {
+            if n >= 100 {
+                return self.compute_core_distances_turbovec(bubbles, min_pts, bit_width);
+            }
+        }
+
+        self.compute_core_distances_exhaustive(bubbles, min_pts)
+    }
+
+    fn compute_core_distances_exhaustive(&self, bubbles: &[DataBubble], min_pts: usize) -> Vec<f64> {
+        let n = bubbles.len();
         (0..n)
             .into_par_iter()
             .map(|i| {
@@ -64,6 +83,50 @@ impl Hdbscan {
                 distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 if distances.len() >= min_pts {
                     distances[min_pts - 1]
+                } else {
+                    *distances.last().unwrap_or(&0.0)
+                }
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "turbovec")]
+    fn compute_core_distances_turbovec(
+        &self,
+        bubbles: &[DataBubble],
+        min_pts: usize,
+        bit_width: usize,
+    ) -> Vec<f64> {
+        let n = bubbles.len();
+        let dim = bubbles[0].rep.len();
+
+        let mut vectors: Vec<f32> = Vec::with_capacity(n * dim);
+        for b in bubbles {
+            for &x in &b.rep {
+                vectors.push(x as f32);
+            }
+        }
+
+        let mut index = TurboQuantIndex::new(dim, bit_width);
+        index.add(&vectors);
+        index.prepare();
+
+        let k = min_pts.min(n.saturating_sub(1)).max(1);
+        let search_k = (k + 5).min(n.saturating_sub(1)).max(1);
+        let results = index.search(&vectors, search_k);
+
+        (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let candidates = results.indices_for_query(i);
+                let mut distances: Vec<f64> = candidates
+                    .iter()
+                    .filter(|&&j| j != i as i64 && j >= 0 && (j as usize) < n)
+                    .map(|&j| bubbles[i].core_distance(&bubbles[j as usize], k))
+                    .collect();
+                distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                if distances.len() >= k {
+                    distances[k - 1]
                 } else {
                     *distances.last().unwrap_or(&0.0)
                 }

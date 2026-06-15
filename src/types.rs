@@ -14,6 +14,9 @@ pub struct HdbscanParams {
     pub cluster_selection_method: ClusterSelection,
     pub compression_rate: f64,
     pub m: usize,
+    /// When set, use turbovec approximate k-NN with the given bit width
+    /// for core-distance computation when the number of bubbles is large.
+    pub turbovec_bit_width: Option<usize>,
 }
 
 impl Default for HdbscanParams {
@@ -24,6 +27,7 @@ impl Default for HdbscanParams {
             cluster_selection_method: ClusterSelection::Eom,
             compression_rate: 0.01,
             m: 25,
+            turbovec_bit_width: None,
         }
     }
 }
