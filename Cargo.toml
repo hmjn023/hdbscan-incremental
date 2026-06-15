@@ -11,9 +11,15 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 turbovec = { version = "0.2", optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+blas-src = { version = "0.10", features = ["openblas"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+blas-src = { version = "0.10", features = ["accelerate"], optional = true }
+
 [features]
 default = []
-turbovec = ["dep:turbovec"]
+turbovec = ["dep:turbovec", "dep:blas-src"]
 
 [dev-dependencies]
 rand = "0.8"

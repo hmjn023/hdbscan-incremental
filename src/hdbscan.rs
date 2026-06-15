@@ -1,7 +1,12 @@
 use crate::data_bubble::DataBubble;
 use crate::distance;
-use crate::types::{ClusterResult, ClusterSelection, CondensedTreeNode, HdbscanError, HdbscanParams, Label, LinkageRow};
+use crate::types::{
+    ClusterResult, ClusterSelection, CondensedTreeNode, HdbscanError, HdbscanParams, Label,
+    LinkageRow,
+};
 use rayon::prelude::*;
+#[cfg(feature = "turbovec")]
+use std::collections::HashSet;
 
 #[cfg(feature = "turbovec")]
 use turbovec::TurboQuantIndex;
@@ -45,7 +50,12 @@ impl Hdbscan {
             ClusterSelection::Leaf => self.extract_clusters_leaf(&condensed, &stability, n)?,
         };
 
-        let num_clusters = labels.iter().filter(|&&l| l >= 0).map(|&l| l as usize).max().map_or(0, |m| m + 1);
+        let num_clusters = labels
+            .iter()
+            .filter(|&&l| l >= 0)
+            .map(|&l| l as usize)
+            .max()
+            .map_or(0, |m| m + 1);
 
         Ok(ClusterResult {
             labels,
@@ -63,7 +73,8 @@ impl Hdbscan {
 
         #[cfg(feature = "turbovec")]
         if let Some(bit_width) = self.params.turbovec_bit_width {
-            if n >= 100 {
+            let dim = bubbles[0].rep.len();
+            if n >= 100 && Self::can_use_turbovec(dim, bit_width) {
                 return self.compute_core_distances_turbovec(bubbles, min_pts, bit_width);
             }
         }
@@ -71,7 +82,16 @@ impl Hdbscan {
         self.compute_core_distances_exhaustive(bubbles, min_pts)
     }
 
-    fn compute_core_distances_exhaustive(&self, bubbles: &[DataBubble], min_pts: usize) -> Vec<f64> {
+    #[cfg(feature = "turbovec")]
+    fn can_use_turbovec(dim: usize, bit_width: usize) -> bool {
+        (2..=4).contains(&bit_width) && dim.is_multiple_of(8)
+    }
+
+    fn compute_core_distances_exhaustive(
+        &self,
+        bubbles: &[DataBubble],
+        min_pts: usize,
+    ) -> Vec<f64> {
         let n = bubbles.len();
         (0..n)
             .into_par_iter()
@@ -112,18 +132,36 @@ impl Hdbscan {
         index.prepare();
 
         let k = min_pts.min(n.saturating_sub(1)).max(1);
-        let search_k = (k + 5).min(n.saturating_sub(1)).max(1);
+        let search_k = (k + 8).min(n);
         let results = index.search(&vectors, search_k);
 
         (0..n)
             .into_par_iter()
             .map(|i| {
                 let candidates = results.indices_for_query(i);
+                let mut seen = HashSet::with_capacity(candidates.len());
                 let mut distances: Vec<f64> = candidates
                     .iter()
-                    .filter(|&&j| j != i as i64 && j >= 0 && (j as usize) < n)
-                    .map(|&j| bubbles[i].core_distance(&bubbles[j as usize], k))
+                    .filter_map(|&j| {
+                        let j = usize::try_from(j).ok()?;
+                        if j == i || j >= n || !seen.insert(j) {
+                            return None;
+                        }
+                        Some(bubbles[i].core_distance(&bubbles[j], k))
+                    })
                     .collect();
+
+                if distances.len() < k {
+                    for j in 0..n {
+                        if j != i && seen.insert(j) {
+                            distances.push(bubbles[i].core_distance(&bubbles[j], k));
+                            if distances.len() >= k {
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 if distances.len() >= k {
                     distances[k - 1]
@@ -134,7 +172,11 @@ impl Hdbscan {
             .collect()
     }
 
-    fn build_mst(&self, bubbles: &[DataBubble], core_distances: &[f64]) -> Vec<(usize, usize, f64)> {
+    fn build_mst(
+        &self,
+        bubbles: &[DataBubble],
+        core_distances: &[f64],
+    ) -> Vec<(usize, usize, f64)> {
         let n = bubbles.len();
         if n == 0 {
             return Vec::new();
@@ -182,12 +224,23 @@ impl Hdbscan {
         mst
     }
 
-    fn mutual_reachability(&self, i: usize, j: usize, bubbles: &[DataBubble], core_distances: &[f64]) -> f64 {
+    fn mutual_reachability(
+        &self,
+        i: usize,
+        j: usize,
+        bubbles: &[DataBubble],
+        core_distances: &[f64],
+    ) -> f64 {
         let d = distance::cosine_distance(&bubbles[i].rep, &bubbles[j].rep);
         d.max(core_distances[i]).max(core_distances[j])
     }
 
-    fn build_linkage(&self, bubbles: &[DataBubble], mst: &[(usize, usize, f64)], n: usize) -> Vec<LinkageRow> {
+    fn build_linkage(
+        &self,
+        bubbles: &[DataBubble],
+        mst: &[(usize, usize, f64)],
+        n: usize,
+    ) -> Vec<LinkageRow> {
         let mut linkage = Vec::with_capacity(n - 1);
         let mut sorted_mst = mst.to_vec();
         sorted_mst.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
@@ -278,13 +331,49 @@ impl Hdbscan {
                     to_process.push(left);
                     to_process.push(right);
                 } else if left_count < min_cluster_size && right_count < min_cluster_size {
-                    self.collect_points(left, bubbles, linkage, &mut ignore, &mut result, node, lambda, n);
-                    self.collect_points(right, bubbles, linkage, &mut ignore, &mut result, node, lambda, n);
+                    self.collect_points(
+                        left,
+                        bubbles,
+                        linkage,
+                        &mut ignore,
+                        &mut result,
+                        node,
+                        lambda,
+                        n,
+                    );
+                    self.collect_points(
+                        right,
+                        bubbles,
+                        linkage,
+                        &mut ignore,
+                        &mut result,
+                        node,
+                        lambda,
+                        n,
+                    );
                 } else if left_count < min_cluster_size {
-                    self.collect_points(left, bubbles, linkage, &mut ignore, &mut result, node, lambda, n);
+                    self.collect_points(
+                        left,
+                        bubbles,
+                        linkage,
+                        &mut ignore,
+                        &mut result,
+                        node,
+                        lambda,
+                        n,
+                    );
                     to_process.push(right);
                 } else {
-                    self.collect_points(right, bubbles, linkage, &mut ignore, &mut result, node, lambda, n);
+                    self.collect_points(
+                        right,
+                        bubbles,
+                        linkage,
+                        &mut ignore,
+                        &mut result,
+                        node,
+                        lambda,
+                        n,
+                    );
                     to_process.push(left);
                 }
             }
@@ -315,12 +404,19 @@ impl Hdbscan {
         } else {
             ignore[node] = true;
             let row = &linkage[node - n];
-            self.collect_points(row.left, bubbles, linkage, ignore, result, parent, lambda, n);
-            self.collect_points(row.right, bubbles, linkage, ignore, result, parent, lambda, n);
+            self.collect_points(
+                row.left, bubbles, linkage, ignore, result, parent, lambda, n,
+            );
+            self.collect_points(
+                row.right, bubbles, linkage, ignore, result, parent, lambda, n,
+            );
         }
     }
 
-    fn compute_stability(&self, condensed: &[CondensedTreeNode]) -> std::collections::HashMap<usize, f64> {
+    fn compute_stability(
+        &self,
+        condensed: &[CondensedTreeNode],
+    ) -> std::collections::HashMap<usize, f64> {
         let mut births: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
         let mut stability: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
 
@@ -353,8 +449,10 @@ impl Hdbscan {
             return Ok((vec![-1i32; n], vec![0.0f64; n]));
         }
 
-        let mut is_cluster: std::collections::HashMap<usize, bool> = std::collections::HashMap::new();
-        let mut cluster_stability: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
+        let mut is_cluster: std::collections::HashMap<usize, bool> =
+            std::collections::HashMap::new();
+        let mut cluster_stability: std::collections::HashMap<usize, f64> =
+            std::collections::HashMap::new();
 
         // Initialize all clusters as selected
         for &cluster_id in stability.keys() {
@@ -363,7 +461,8 @@ impl Hdbscan {
         }
 
         // Build parent -> child-cluster map for fast lookup
-        let mut children_of: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        let mut children_of: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
         for node in condensed {
             if node.child >= n {
                 children_of.entry(node.parent).or_default().push(node.child);
@@ -393,7 +492,8 @@ impl Hdbscan {
         }
 
         // Build child -> parent map, keeping only the highest lambda edge for each child
-        let mut child_to_parent: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut child_to_parent: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
         for node in condensed {
             child_to_parent
                 .entry(node.child)
@@ -424,7 +524,8 @@ impl Hdbscan {
         }
 
         // For each point, find the nearest selected ancestor by lambda
-        let mut point_cluster_lambda: std::collections::HashMap<usize, (i32, f64)> = std::collections::HashMap::new();
+        let mut point_cluster_lambda: std::collections::HashMap<usize, (i32, f64)> =
+            std::collections::HashMap::new();
 
         for (point, label_slot) in labels.iter_mut().enumerate().take(n) {
             let mut current = point;
@@ -456,7 +557,8 @@ impl Hdbscan {
         }
 
         // Compute probabilities: lambda_p / max_lambda_in_cluster
-        let mut max_lambda_by_cluster: std::collections::HashMap<i32, f64> = std::collections::HashMap::new();
+        let mut max_lambda_by_cluster: std::collections::HashMap<i32, f64> =
+            std::collections::HashMap::new();
         for &(label, lambda_val) in point_cluster_lambda.values() {
             let entry = max_lambda_by_cluster.entry(label).or_insert(lambda_val);
             if lambda_val > *entry {
@@ -483,8 +585,10 @@ impl Hdbscan {
         n: usize,
     ) -> Result<(Vec<Label>, Vec<f64>), HdbscanError> {
         // Leaf method: select leaf clusters
-        let mut is_cluster: std::collections::HashMap<usize, bool> = std::collections::HashMap::new();
-        let mut children_of: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        let mut is_cluster: std::collections::HashMap<usize, bool> =
+            std::collections::HashMap::new();
+        let mut children_of: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
 
         for node in condensed {
             children_of.entry(node.parent).or_default().push(node.child);
@@ -492,7 +596,8 @@ impl Hdbscan {
 
         // Find leaves (nodes that are not parents)
         let all_parents: std::collections::HashSet<usize> = children_of.keys().cloned().collect();
-        let all_children: std::collections::HashSet<usize> = condensed.iter().map(|c| c.child).collect();
+        let all_children: std::collections::HashSet<usize> =
+            condensed.iter().map(|c| c.child).collect();
         let leaves: Vec<usize> = all_children.difference(&all_parents).cloned().collect();
 
         for &leaf in &leaves {
@@ -587,5 +692,37 @@ mod tests {
 
         let result = hdbscan.cluster(&bubbles).unwrap();
         assert!(result.num_clusters >= 1);
+    }
+
+    #[cfg(feature = "turbovec")]
+    #[test]
+    fn test_turbovec_core_distances_handle_large_k() {
+        let params = HdbscanParams {
+            min_pts: 119,
+            turbovec_bit_width: Some(4),
+            ..Default::default()
+        };
+        let hdbscan = Hdbscan::new(params);
+        let bubbles: Vec<DataBubble> = (0..120)
+            .map(|i| {
+                let mut point = vec![0.0; 8];
+                point[i % 8] = 1.0 + i as f64 * 0.001;
+                DataBubble::from_cf(&crate::cf::ClusteringFeature::from_point(&point))
+            })
+            .collect();
+
+        let distances = hdbscan.compute_core_distances_turbovec(&bubbles, 119, 4);
+
+        assert_eq!(distances.len(), bubbles.len());
+        assert!(distances.iter().all(|d| d.is_finite()));
+    }
+
+    #[cfg(feature = "turbovec")]
+    #[test]
+    fn test_turbovec_rejects_unsupported_index_shapes() {
+        assert!(Hdbscan::can_use_turbovec(8, 2));
+        assert!(!Hdbscan::can_use_turbovec(7, 2));
+        assert!(!Hdbscan::can_use_turbovec(8, 1));
+        assert!(!Hdbscan::can_use_turbovec(8, 5));
     }
 }

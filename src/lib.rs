@@ -1,8 +1,11 @@
+#[cfg(all(feature = "turbovec", any(target_os = "linux", target_os = "macos")))]
+extern crate blas_src;
+
+pub mod bubble_tree;
 pub mod cf;
 pub mod data_bubble;
 pub mod distance;
 pub mod hdbscan;
-pub mod bubble_tree;
 pub mod types;
 
 pub use types::{ClusterResult, ClusterSelection, HdbscanError, HdbscanParams};
@@ -92,7 +95,7 @@ mod tests {
         let params = HdbscanParams {
             min_pts: 2,
             min_cluster_size: 2,
-            compression_rate: 0.5,  // 2 leaves
+            compression_rate: 0.5, // 2 leaves
             m: 1,
             ..Default::default()
         };
@@ -119,7 +122,7 @@ mod tests {
         let params = HdbscanParams {
             min_pts: 2,
             min_cluster_size: 2,
-            compression_rate: 0.5,  // 2 leaves
+            compression_rate: 0.5, // 2 leaves
             m: 1,
             ..Default::default()
         };
